@@ -1,0 +1,6 @@
+{
+  "name": "AutoPedia",
+  "description": "Plataforma completa de manuais, autopeças, problemas crônicos, diagramas, fórum técnico e assistente IA para mecânicos, eletricistas e pintores de veículos.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

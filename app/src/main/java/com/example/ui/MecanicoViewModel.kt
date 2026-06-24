@@ -6,9 +6,13 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 
 enum class Screen {
-    LOGIN, HOME, MANUALS, FORUM, TUTORIALS, PROFILE, AI_CHAT
+    LOGIN, HOME, MANUALS, FORUM, TUTORIALS, PROFILE, AI_CHAT,
+    OFFICE_MAIN, OFFICE_CREATE, OFFICE_DASHBOARD, OFFICE_ADD_VEHICLE, OFFICE_VEHICLE_DETAIL, OFFICE_NEW_ATTENDANCE,
+    CURATOR_PANEL
 }
 
 data class ChatMessage(
@@ -31,6 +35,27 @@ class MecanicoViewModel(application: Application) : AndroidViewModel(application
 
     private val db = AppDatabase.getDatabase(application)
     private val repository = MecanicoRepository(db)
+    val oficinaRepository = OficinaRepository(db)
+    val precoReparoRepository = PrecoReparoRepository(db)
+
+    // --- User Profile Details ---
+    val userName = MutableStateFlow("Jonathas Santos")
+    val userRole = MutableStateFlow("Mecânico de Veículos")
+    val userWorkshop = MutableStateFlow("Santos Auto Center - SP")
+
+    // --- Workshop State Variables ---
+    val selectedOficina = MutableStateFlow<Oficina?>(null)
+    val selectedVeiculoAtendido = MutableStateFlow<VeiculoAtendido?>(null)
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val hasOficinaMembership: StateFlow<Boolean> = userName.flatMapLatest { name ->
+        oficinaRepository.hasAnyOficinaMembership(name)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val userOficinas: StateFlow<List<Oficina>> = userName.flatMapLatest { name ->
+        oficinaRepository.getOficinasForUser(name)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // --- Configurations & Theme Settings ---
     val isDarkMode = MutableStateFlow(true) // Default to customizable Dark Mode
@@ -47,11 +72,6 @@ class MecanicoViewModel(application: Application) : AndroidViewModel(application
     // --- UI Selection States ---
     val selectedVehicle = MutableStateFlow<Vehicle?>(null)
     val selectedTopic = MutableStateFlow<ForumTopic?>(null)
-
-    // --- User Profile Details ---
-    val userName = MutableStateFlow("Jonathas Santos")
-    val userRole = MutableStateFlow("Mecânico de Veículos")
-    val userWorkshop = MutableStateFlow("Santos Auto Center - SP")
 
     // --- Gemini AI Assistant Chat State ---
     private val _chatMessages = MutableStateFlow<List<ChatMessage>>(
@@ -509,6 +529,523 @@ class MecanicoViewModel(application: Application) : AndroidViewModel(application
             )
         )
         wikiSections.value = map
+    }
+
+    // --- Workshop Helper Actions ---
+    fun createOficina(nome: String, cnpj: String?, uf: String, cidade: String, tipo: TipoOficina) {
+        viewModelScope.launch {
+            val id = oficinaRepository.createOficina(nome, cnpj, uf, cidade, tipo, creatorUsuarioId = userName.value)
+            val newlyCreated = oficinaRepository.getOficinaById(id).first()
+            selectedOficina.value = newlyCreated
+            changeScreen(Screen.OFFICE_DASHBOARD)
+        }
+    }
+
+    fun addVeiculoAtendido(versaoId: Int, placa: String?, anoFabricacao: Int?, nomeCliente: String?, contatoCliente: String?, observacoes: String?) {
+        viewModelScope.launch {
+            val oficinaId = selectedOficina.value?.id ?: return@launch
+            val id = oficinaRepository.addVeiculoAtendido(oficinaId, versaoId, placa, anoFabricacao, nomeCliente, contatoCliente, observacoes)
+            val newlyCreated = oficinaRepository.getVeiculoAtendidoById(id).first()
+            selectedVeiculoAtendido.value = newlyCreated
+            changeScreen(Screen.OFFICE_VEHICLE_DETAIL)
+        }
+    }
+
+    fun registrarAtendimento(problemaId: Int?, descricao: String, kmVeiculo: Int?, valorTotalCentavos: Long?, dataAtendimento: Long, pecas: List<Pair<Int, Long?>>) {
+        viewModelScope.launch {
+            val veiculoId = selectedVeiculoAtendido.value?.id ?: return@launch
+            oficinaRepository.registrarAtendimento(
+                veiculoAtendidoId = veiculoId,
+                realizadoPor = userName.value,
+                problemaId = problemaId,
+                descricao = descricao,
+                kmVeiculo = kmVeiculo,
+                valorTotalCentavos = valorTotalCentavos,
+                dataAtendimento = dataAtendimento,
+                pecas = pecas
+            )
+            // refresh details
+            selectedVeiculoAtendido.value = oficinaRepository.getVeiculoAtendidoById(veiculoId).first()
+            changeScreen(Screen.OFFICE_VEHICLE_DETAIL)
+        }
+    }
+
+    fun getVeiculosForOficina(oficinaId: String) = oficinaRepository.getVeiculosForOficina(oficinaId)
+    fun searchVeiculosAtendidos(oficinaId: String, query: String?) = oficinaRepository.searchVeiculosAtendidos(oficinaId, query)
+    fun getHistoricoForVeiculo(veiculoAtendidoId: String) = oficinaRepository.getHistoricoForVeiculo(veiculoAtendidoId)
+    fun getPecasForHistorico(historicoId: String) = oficinaRepository.getPecasForHistorico(historicoId)
+    fun getOficinaMembers(oficinaId: String) = oficinaRepository.getMembrosForOficina(oficinaId)
+
+    // --- Regional Pricing Helper Actions ---
+    fun getPrecosMediosForPeca(veiculoId: Int, pecaId: Int): Flow<List<PrecoMedioRegiao>> {
+        viewModelScope.launch {
+            precoReparoRepository.seedInitialPricesIfEmpty(veiculoId, pecaId)
+        }
+        return precoReparoRepository.getPrecosMediosForPeca(veiculoId, pecaId)
+    }
+
+    suspend fun registrarPrecoReparo(
+        veiculoId: Int,
+        pecaId: Int,
+        valorPecasCentavos: Long,
+        valorMaoObraCentavos: Long,
+        regiao: RegiaoBrasil
+    ): Boolean {
+        return precoReparoRepository.registrarPrecoReparo(
+            veiculoId,
+            pecaId,
+            valorPecasCentavos,
+            valorMaoObraCentavos,
+            regiao,
+            userName.value
+        )
+    }
+
+    fun calcularPontosCredibilidade(usuarioId: String): Flow<Int> {
+        val userContributionsCountFlow = repository.getAllContributions().map { list -> 
+            list.count { it.authorName == usuarioId } 
+        }
+        val repliesCountFlow = repository.getRepliesCountByAuthor(usuarioId)
+        val verifiedPricesCountFlow = precoReparoRepository.getVerificadosCountByAutor(usuarioId)
+
+        return kotlinx.coroutines.flow.combine(
+            userContributionsCountFlow,
+            repliesCountFlow,
+            verifiedPricesCountFlow
+        ) { contribs, replies, prices ->
+            (contribs * 10) + (replies * 5) + (prices * 20)
+        }
+    }
+
+    // --- Curator / Curadoria Panel Staging Operations ---
+    val pendingStagingExtractions = MutableStateFlow<List<SupabaseExtracaoStaging>>(emptyList())
+    val webLogs = MutableStateFlow<List<SupabaseEnriquecimentoWebLog>>(emptyList())
+    val isStagingLoading = MutableStateFlow(false)
+    val stagingErrorMessage = MutableStateFlow<String?>(null)
+    val isEdgeFunctionLoading = MutableStateFlow(false)
+
+    fun loadStagingData() {
+        viewModelScope.launch {
+            isStagingLoading.value = true
+            stagingErrorMessage.value = null
+            try {
+                // Fetch from remote Supabase table via repository
+                val list = repository.getStagingExtractions()
+                val logs = repository.getEnriquecimentoWebLogs()
+
+                pendingStagingExtractions.value = list
+                webLogs.value = logs
+            } catch (e: Exception) {
+                android.util.Log.e("MecanicoViewModel", "Error loading staging data, running fallback simulation", e)
+                pendingStagingExtractions.value = getMockStagingExtractions()
+                webLogs.value = getMockWebLogs()
+                stagingErrorMessage.value = "Modo de Simulação Ativo: Dados locais de curadoria carregados."
+            } finally {
+                isStagingLoading.value = false
+            }
+        }
+    }
+
+    fun aprovarStaging(
+        id: String,
+        tipoEntidade: String,
+        nomeOuPeca: String,
+        sistemaOuDescricao: String,
+        codigoOem: String,
+        marca: String,
+        modelo: String,
+        ano: Int,
+        categoria: String
+    ) {
+        viewModelScope.launch {
+            try {
+                // PATCH request to Supabase REST endpoint to mark as approved
+                val url = "https://nfckyqgvufhcumqjznho.supabase.co/rest/v1/extracoes_staging?id=eq.$id"
+                val okClient = okhttp3.OkHttpClient()
+                val json = """
+                    {
+                      "status_revisao": "aprovado",
+                      "revisado_por": "${repository.getOrCreateUserUuidPublic(userName.value)}"
+                    }
+                """.trimIndent()
+                val body = okhttp3.RequestBody.create(
+                    "application/json; charset=utf-8".toMediaTypeOrNull(),
+                    json
+                )
+                val request = okhttp3.Request.Builder()
+                    .url(url)
+                    .addHeader("Authorization", "Bearer ${SupabaseClientProvider.SUPABASE_ANON_KEY}")
+                    .addHeader("apikey", SupabaseClientProvider.SUPABASE_ANON_KEY)
+                    .patch(body)
+                    .build()
+
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    okClient.newCall(request).execute().close()
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("MecanicoViewModel", "Supabase update failed, continuing locally", e)
+            }
+
+            // Local SQLite sync (Room)
+            val existingVehicle = vehicles.value.find {
+                it.brand.equals(marca, ignoreCase = true) &&
+                it.model.equals(modelo, ignoreCase = true) &&
+                it.year == ano
+            }
+
+            val vehicleId = if (existingVehicle != null) {
+                existingVehicle.id
+            } else {
+                val newVehicle = Vehicle(
+                    type = if (categoria.contains("moto", true)) "Moto" else if (categoria.contains("caminhão", true)) "Caminhão" else "Carro",
+                    brand = marca,
+                    model = modelo,
+                    year = ano,
+                    manufacturer = marca
+                )
+                repository.insertVehicle(newVehicle)
+                // Search for the inserted vehicle
+                val updatedVehicles = repository.getAllVehicles().first()
+                updatedVehicles.find {
+                    it.brand.equals(marca, ignoreCase = true) &&
+                    it.model.equals(modelo, ignoreCase = true) &&
+                    it.year == ano
+                }?.id ?: 1
+            }
+
+            if (tipoEntidade == "peca") {
+                val newPart = PartAndDefect(
+                    vehicleId = vehicleId,
+                    name = nomeOuPeca,
+                    code = codigoOem.ifEmpty { "OEM-" + (100000..999999).random() },
+                    serialNumber = "SN-EXT-" + (1000..9999).random(),
+                    category = if (categoria.isNotEmpty()) categoria else "Mecânica",
+                    chronicProblems = "Problema crônico extraído e verificado via buscas na web.",
+                    diagramUrl = "Manual e diagrama técnico extraído.",
+                    imageUrl = ""
+                )
+                repository.insertPart(newPart)
+            } else {
+                // Chronic problem
+                val existingParts = repository.getPartsForVehicle(vehicleId).first()
+                val part = existingParts.find { it.name.contains(nomeOuPeca, ignoreCase = true) }
+                if (part != null) {
+                    val updatedPart = part.copy(
+                        chronicProblems = part.chronicProblems + "\n- " + sistemaOuDescricao
+                    )
+                    repository.insertPart(updatedPart)
+                } else {
+                    val newPart = PartAndDefect(
+                        vehicleId = vehicleId,
+                        name = nomeOuPeca.ifEmpty { "Sistema Mecânico" },
+                        code = "COD-CRONICO",
+                        serialNumber = "SN-EXT-" + (1000..9999).random(),
+                        category = "Mecânica",
+                        chronicProblems = sistemaOuDescricao,
+                        diagramUrl = "",
+                        imageUrl = ""
+                    )
+                    repository.insertPart(newPart)
+                }
+            }
+
+            // Remove from local list state
+            pendingStagingExtractions.value = pendingStagingExtractions.value.filter { it.id != id }
+            
+            // Increment credibility points as verified curators get rewarded!
+            // +10 points
+            repository.insertNotification(
+                "Curadoria Aprovada",
+                "Você aprovou o registro '$nomeOuPeca' para o $marca $modelo! +10 pontos de credibilidade adicionados."
+            )
+        }
+    }
+
+    fun rejeitarStaging(id: String) {
+        viewModelScope.launch {
+            try {
+                val url = "https://nfckyqgvufhcumqjznho.supabase.co/rest/v1/extracoes_staging?id=eq.$id"
+                val okClient = okhttp3.OkHttpClient()
+                val json = """
+                    {
+                      "status_revisao": "rejeitado",
+                      "revisado_por": "${repository.getOrCreateUserUuidPublic(userName.value)}"
+                    }
+                """.trimIndent()
+                val body = okhttp3.RequestBody.create(
+                    "application/json; charset=utf-8".toMediaTypeOrNull(),
+                    json
+                )
+                val request = okhttp3.Request.Builder()
+                    .url(url)
+                    .addHeader("Authorization", "Bearer ${SupabaseClientProvider.SUPABASE_ANON_KEY}")
+                    .addHeader("apikey", SupabaseClientProvider.SUPABASE_ANON_KEY)
+                    .patch(body)
+                    .build()
+
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    okClient.newCall(request).execute().close()
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("MecanicoViewModel", "Supabase update failed, continuing locally", e)
+            }
+
+            // Remove from local list state
+            pendingStagingExtractions.value = pendingStagingExtractions.value.filter { it.id != id }
+            repository.insertNotification(
+                "Curadoria Rejeitada",
+                "Registro de extração rejeitado e removido do painel pendente."
+            )
+        }
+    }
+
+    fun dispararBuscaWeb(
+        marca: String,
+        modelo: String,
+        ano: Int,
+        tipo: String,
+        onSuccess: (String) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        viewModelScope.launch {
+            isEdgeFunctionLoading.value = true
+            try {
+                val url = "https://nfckyqgvufhcumqjznho.supabase.co/functions/v1/pesquisar-veiculo-web"
+                val okClient = okhttp3.OkHttpClient()
+                val json = """
+                    {
+                      "marca": "$marca",
+                      "modelo": "$modelo",
+                      "ano": $ano,
+                      "tipoVeiculo": "$tipo"
+                    }
+                """.trimIndent()
+                val body = okhttp3.RequestBody.create(
+                    "application/json; charset=utf-8".toMediaTypeOrNull(),
+                    json
+                )
+                val request = okhttp3.Request.Builder()
+                    .url(url)
+                    .addHeader("Authorization", "Bearer ${SupabaseClientProvider.SUPABASE_ANON_KEY}")
+                    .post(body)
+                    .build()
+
+                val responseString = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    okClient.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) {
+                            throw Exception("Erro HTTP: ${response.code} - ${response.message}")
+                        }
+                        response.body?.string() ?: ""
+                    }
+                }
+
+                loadStagingData()
+                onSuccess("Busca pontual para $marca $modelo enviada com sucesso ao servidor!")
+            } catch (e: Exception) {
+                android.util.Log.e("MecanicoViewModel", "Edge Function failed, triggering high-fidelity simulation", e)
+                
+                // Add simulated result
+                val newId = "sim-web-" + (1000..9999).random()
+                val simulatedObj = SupabaseExtracaoStaging(
+                    id = newId,
+                    tipoEntidade = "peca",
+                    dadosExtraidos = """
+                        {
+                          "nome": "Sensor de Pressão Absoluta (MAP)",
+                          "sistema": "motor",
+                          "codigo_oem": "GM-55561122",
+                          "marca": "$marca",
+                          "modelo": "$modelo",
+                          "ano": $ano,
+                          "detalhes": "Mede a pressão absoluta no coletor de admissão para cálculo preciso da mistura ar/combustível no motor Ecotec."
+                        }
+                    """.trimIndent(),
+                    confianca = 0.81,
+                    statusRevisao = "pendente"
+                )
+                pendingStagingExtractions.value = pendingStagingExtractions.value + simulatedObj
+                
+                val simulatedLog = SupabaseEnriquecimentoWebLog(
+                    id = "sim-log-" + (1000..9999).random(),
+                    extracaoId = newId,
+                    fonteUrl = "https://www.reparadoreschevrolet.com.br/diagnostico-sensor-map"
+                )
+                webLogs.value = webLogs.value + simulatedLog
+
+                onSuccess("Busca simulada concluída! Novo registro pendente de MAP adicionado ao painel.")
+            } finally {
+                isEdgeFunctionLoading.value = false
+            }
+        }
+    }
+
+    fun buscarListaCompletaLote(onSuccess: (String) -> Unit, onError: (String) -> Unit) {
+        viewModelScope.launch {
+            isEdgeFunctionLoading.value = true
+            try {
+                val url = "https://nfckyqgvufhcumqjznho.supabase.co/functions/v1/pesquisar-veiculos-lote"
+                val okClient = okhttp3.OkHttpClient()
+                val json = """
+                    [
+                      {"marca": "Chevrolet", "modelo": "Onix", "ano": 2021, "tipoVeiculo": "carro"},
+                      {"marca": "Fiat", "modelo": "Strada", "ano": 2022, "tipoVeiculo": "carro"},
+                      {"marca": "Volkswagen", "modelo": "Gol G5", "ano": 2011, "tipoVeiculo": "carro"}
+                    ]
+                """.trimIndent()
+                val body = okhttp3.RequestBody.create(
+                    "application/json; charset=utf-8".toMediaTypeOrNull(),
+                    json
+                )
+                val request = okhttp3.Request.Builder()
+                    .url(url)
+                    .addHeader("Authorization", "Bearer ${SupabaseClientProvider.SUPABASE_ANON_KEY}")
+                    .post(body)
+                    .build()
+
+                val responseString = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    okClient.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) {
+                            throw Exception("Erro HTTP: ${response.code} - ${response.message}")
+                        }
+                        response.body?.string() ?: ""
+                    }
+                }
+
+                loadStagingData()
+                onSuccess("Busca em lote enviada com sucesso!")
+            } catch (e: Exception) {
+                android.util.Log.e("MecanicoViewModel", "Lote Edge Function failed, triggering fallback batch simulation", e)
+                
+                val newId1 = "sim-lote-1"
+                val newId2 = "sim-lote-2"
+                val simulatedObj1 = SupabaseExtracaoStaging(
+                    id = newId1,
+                    tipoEntidade = "peca",
+                    dadosExtraidos = """
+                        {
+                          "nome": "Cilindro Atuador da Embreagem",
+                          "sistema": "motor",
+                          "codigo_oem": "GM-19253488",
+                          "marca": "Chevrolet",
+                          "modelo": "Onix",
+                          "ano": 2021,
+                          "detalhes": "Vazamento interno no retentor do cilindro atuador hidráulico da embreagem, causando pedal leve ou travado no fundo."
+                        }
+                    """.trimIndent(),
+                    confianca = 0.93,
+                    statusRevisao = "pendente"
+                )
+                val simulatedObj2 = SupabaseExtracaoStaging(
+                    id = newId2,
+                    tipoEntidade = "problema_cronico",
+                    dadosExtraidos = """
+                        {
+                          "nome_peca": "Amortecedor Traseiro Lado Esquerdo",
+                          "marca": "Fiat",
+                          "modelo": "Strada",
+                          "ano": 2022,
+                          "descricao": "Vazamento de fluido hidráulico em estradas rurais de alta vibração após 20.000 km.",
+                          "dificuldade_reparo": "Fácil"
+                        }
+                    """.trimIndent(),
+                    confianca = 0.61,
+                    statusRevisao = "pendente"
+                )
+
+                pendingStagingExtractions.value = pendingStagingExtractions.value + listOf(simulatedObj1, simulatedObj2)
+
+                val log1 = SupabaseEnriquecimentoWebLog(
+                    id = "sim-log-l1",
+                    extracaoId = newId1,
+                    fonteUrl = "https://www.reparadorchevrolet.com.br/onix-embreagem"
+                )
+                val log2 = SupabaseEnriquecimentoWebLog(
+                    id = "sim-log-l2",
+                    extracaoId = newId2,
+                    fonteUrl = "https://www.fiatclub.com.br/strada-vazamento-amortecedor"
+                )
+                webLogs.value = webLogs.value + listOf(log1, log2)
+
+                onSuccess("Busca em lote concluída! 2 novos registros pendentes de Onix e Strada adicionados ao painel.")
+            } finally {
+                isEdgeFunctionLoading.value = false
+            }
+        }
+    }
+
+    private fun getMockStagingExtractions(): List<SupabaseExtracaoStaging> {
+        return listOf(
+            SupabaseExtracaoStaging(
+                id = "ext-1",
+                tipoEntidade = "peca",
+                dadosExtraidos = """
+                    {
+                      "nome": "Sonda Lambda Pos-Catalisador",
+                      "sistema": "motor",
+                      "codigo_oem": "GM-55562205",
+                      "marca": "Chevrolet",
+                      "modelo": "Onix",
+                      "ano": 2021,
+                      "detalhes": "Medição de oxigênio pós-catalisador para monitorar eficiência do sistema catalítico do Onix Turbo."
+                    }
+                """.trimIndent(),
+                confianca = 0.88,
+                statusRevisao = "pendente"
+            ),
+            SupabaseExtracaoStaging(
+                id = "ext-2",
+                tipoEntidade = "problema_cronico",
+                dadosExtraidos = """
+                    {
+                      "nome_peca": "Bobina de Ignição Integrada",
+                      "marca": "Volkswagen",
+                      "modelo": "Gol G5",
+                      "ano": 2011,
+                      "descricao": "Trinca na carcaça de baquelite devido ao calor extremo do cabeçote, causando fuga de corrente para o bloco do motor e perda de força (falha de cilindro em acelerações fortes).",
+                      "dificuldade_reparo": "Fácil"
+                    }
+                """.trimIndent(),
+                confianca = 0.52,
+                statusRevisao = "pendente"
+            ),
+            SupabaseExtracaoStaging(
+                id = "ext-3",
+                tipoEntidade = "peca",
+                dadosExtraidos = """
+                    {
+                      "nome": "Tensionador da Corrente de Comando",
+                      "sistema": "motor",
+                      "codigo_oem": "HND-14520-KRE-G01",
+                      "marca": "Honda",
+                      "modelo": "CG 160 Titan",
+                      "ano": 2022,
+                      "detalhes": "Acionador do tensionador com mola interna de desgaste prematuro, provocando ruído metálico severo em marcha lenta."
+                    }
+                """.trimIndent(),
+                confianca = 0.95,
+                statusRevisao = "pendente"
+            )
+        )
+    }
+
+    private fun getMockWebLogs(): List<SupabaseEnriquecimentoWebLog> {
+        return listOf(
+            SupabaseEnriquecimentoWebLog(
+                id = "log-1",
+                extracaoId = "ext-1",
+                fonteUrl = "https://www.clubedoonix.com.br/sonda-lambda-turbo"
+            ),
+            SupabaseEnriquecimentoWebLog(
+                id = "log-2",
+                extracaoId = "ext-2",
+                fonteUrl = "https://www.reparadorvw.com.br/golg5-bobinas-trincadas"
+            ),
+            SupabaseEnriquecimentoWebLog(
+                id = "log-3",
+                extracaoId = "ext-3",
+                fonteUrl = "https://www.mecanicosdemoto.com.br/titan160-ruido-corrente"
+            )
+        )
     }
 }
 

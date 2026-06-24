@@ -117,6 +117,161 @@ fun ProfileScreen(viewModel: MecanicoViewModel) {
                 }
             }
 
+            // Dynamic Credibility Seal Card (PROMPT 4)
+            item {
+                val points by viewModel.calcularPontosCredibilidade(name).collectAsState(initial = 0)
+                
+                val tierLabel: String
+                val tint: Color
+                val icon: androidx.compose.ui.graphics.vector.ImageVector
+                val nextThreshold: Int
+                val nextTier: String
+
+                when {
+                    points >= 300 -> {
+                        tierLabel = "Mestre de Ouro"
+                        tint = Color(0xFFFFD700)
+                        icon = Icons.Default.WorkspacePremium
+                        nextThreshold = 300
+                        nextTier = ""
+                    }
+                    points >= 150 -> {
+                        tierLabel = "Especialista Prata"
+                        tint = Color(0xFFC0C0C0)
+                        icon = Icons.Default.Stars
+                        nextThreshold = 300
+                        nextTier = "Mestre de Ouro"
+                    }
+                    points >= 50 -> {
+                        tierLabel = "Colaborador Bronze"
+                        tint = Color(0xFFCD7F32)
+                        icon = Icons.Default.Shield
+                        nextThreshold = 150
+                        nextTier = "Especialista Prata"
+                    }
+                    else -> {
+                        tierLabel = "Iniciante"
+                        tint = Color(0xFF888888)
+                        icon = Icons.Default.Info
+                        nextThreshold = 50
+                        nextTier = "Colaborador Bronze"
+                    }
+                }
+
+                val progress = when {
+                    points >= 300 -> 1f
+                    points >= 150 -> (points - 150).toFloat() / 150f
+                    points >= 50 -> (points - 50).toFloat() / 100f
+                    else -> points.toFloat() / 50f
+                }
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, tint.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+                        .testTag("credibility_seal_card"),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF131C2D)),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .background(tint.copy(alpha = 0.15f), CircleShape)
+                                    .border(1.5.dp, tint, CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = icon,
+                                    contentDescription = null,
+                                    tint = tint,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Selo de Credibilidade",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = tierLabel,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = tint
+                                )
+                                Text(
+                                    text = "$points Pontos Acumulados",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        if (points < 300) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Progresso para $nextTier",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                )
+                                Text(
+                                    text = "$points / $nextThreshold pts",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = tint
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            LinearProgressIndicator(
+                                progress = { progress },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(6.dp)
+                                    .clip(RoundedCornerShape(3.dp)),
+                                color = tint,
+                                trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
+                            )
+                        } else {
+                            Text(
+                                text = "Nível Máximo Atingido! Obrigado por guiar nossa comunidade.",
+                                fontSize = 10.sp,
+                                color = com.example.ui.theme.SuccessGreen,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Weights details
+                        Text(
+                            text = "Como pontuar: +10 Dica Crônica | +5 Resposta Útil | +20 Preço Validado",
+                            fontSize = 9.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                            fontWeight = FontWeight.Medium,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
+
             // Dynamic Simulation Toggle Card
             item {
                 Card(
@@ -154,6 +309,62 @@ fun ProfileScreen(viewModel: MecanicoViewModel) {
                             onCheckedChange = { viewModel.toggleUserRole() },
                             modifier = Modifier.testTag("simulation_role_switch")
                         )
+                    }
+                }
+            }
+
+            // Curator Panel Access Card
+            if (role == "Profissional" || role == "Mecânico de Veículos") {
+                item {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp)
+                            .border(1.dp, Color(0xFF10B981).copy(alpha = 0.3f), RoundedCornerShape(12.dp))
+                            .clickable { viewModel.changeScreen(Screen.CURATOR_PANEL) }
+                            .testTag("curator_panel_access_card"),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF0C1914)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.VerifiedUser,
+                                        contentDescription = null,
+                                        tint = Color(0xFF10B981),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Text(
+                                        text = "Painel de Curadoria",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        color = Color(0xFF10B981)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Moderação inteligente de extrações pendentes da web & IA para o catálogo.",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF94A3B8)
+                                )
+                            }
+                            Icon(
+                                imageVector = Icons.Default.ArrowForwardIos,
+                                contentDescription = null,
+                                tint = Color(0xFF10B981),
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
                     }
                 }
             }

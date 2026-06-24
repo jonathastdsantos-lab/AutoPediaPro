@@ -1,6 +1,7 @@
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.kotlin.compose)
+  alias(libs.plugins.kotlin.serialization)
   alias(libs.plugins.google.devtools.ksp)
   alias(libs.plugins.roborazzi)
   alias(libs.plugins.secrets)
@@ -11,7 +12,7 @@ android {
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
-    applicationId = "com.aistudio.mecanicopro.xjykb"
+    applicationId = "br.com.autopedia.app"
     minSdk = 24
     targetSdk = 36
     versionCode = 1
@@ -90,6 +91,10 @@ dependencies {
   implementation(libs.androidx.navigation.compose)
   implementation(libs.androidx.room.ktx)
   implementation(libs.androidx.room.runtime)
+  implementation(libs.supabase.postgrest)
+  implementation(libs.supabase.auth)
+  implementation(libs.kotlinx.serialization.json)
+  implementation(libs.ktor.client.okhttp)
   implementation(libs.coil.compose)
   implementation(libs.converter.moshi)
   implementation(libs.firebase.ai)

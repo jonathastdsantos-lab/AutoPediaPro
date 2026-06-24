@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">AutoPedia</string>
+    <string name="version_display">1.0.0</string>
 </resources>

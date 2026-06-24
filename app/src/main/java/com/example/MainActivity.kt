@@ -148,6 +148,18 @@ fun AppNavigationContainer(viewModel: MecanicoViewModel) {
                     )
 
                     NavigationRailItem(
+                        selected = activeScreen in listOf(
+                            Screen.OFFICE_MAIN, Screen.OFFICE_CREATE, Screen.OFFICE_DASHBOARD,
+                            Screen.OFFICE_ADD_VEHICLE, Screen.OFFICE_VEHICLE_DETAIL, Screen.OFFICE_NEW_ATTENDANCE
+                        ),
+                        onClick = { viewModel.changeScreen(Screen.OFFICE_MAIN) },
+                        icon = { Icon(Icons.Default.Storefront, contentDescription = "Oficina") },
+                        label = { Text(if (language == "PT-BR") "Oficina" else "Workshop") },
+                        colors = railItemColors,
+                        modifier = Modifier.testTag("nav_oficina_tab_rail")
+                    )
+
+                    NavigationRailItem(
                         selected = activeScreen == Screen.PROFILE,
                         onClick = { viewModel.changeScreen(Screen.PROFILE) },
                         icon = { Icon(Icons.Default.Person, contentDescription = "Profile") },
@@ -170,6 +182,13 @@ fun AppNavigationContainer(viewModel: MecanicoViewModel) {
                         Screen.TUTORIALS -> TutorialsScreen(viewModel)
                         Screen.PROFILE -> ProfileScreen(viewModel)
                         Screen.AI_CHAT -> AiMechanicScreen(viewModel)
+                        Screen.OFFICE_MAIN,
+                        Screen.OFFICE_CREATE,
+                        Screen.OFFICE_DASHBOARD,
+                        Screen.OFFICE_ADD_VEHICLE,
+                        Screen.OFFICE_VEHICLE_DETAIL,
+                        Screen.OFFICE_NEW_ATTENDANCE -> OficinaScreen(viewModel)
+                        Screen.CURATOR_PANEL -> CuratorPanelScreen(viewModel)
                     }
                 }
             }
@@ -243,6 +262,18 @@ fun AppNavigationContainer(viewModel: MecanicoViewModel) {
                             )
 
                             NavigationBarItem(
+                                selected = activeScreen in listOf(
+                                    Screen.OFFICE_MAIN, Screen.OFFICE_CREATE, Screen.OFFICE_DASHBOARD,
+                                    Screen.OFFICE_ADD_VEHICLE, Screen.OFFICE_VEHICLE_DETAIL, Screen.OFFICE_NEW_ATTENDANCE
+                                ),
+                                onClick = { viewModel.changeScreen(Screen.OFFICE_MAIN) },
+                                icon = { Icon(Icons.Default.Storefront, contentDescription = "Oficina") },
+                                label = { Text(if (language == "PT-BR") "Oficina" else "Workshop") },
+                                colors = itemColors,
+                                modifier = Modifier.testTag("nav_oficina_tab")
+                            )
+
+                            NavigationBarItem(
                                 selected = activeScreen == Screen.PROFILE,
                                 onClick = { viewModel.changeScreen(Screen.PROFILE) },
                                 icon = { Icon(Icons.Default.Person, contentDescription = "Profile") },
@@ -267,6 +298,13 @@ fun AppNavigationContainer(viewModel: MecanicoViewModel) {
                         Screen.TUTORIALS -> TutorialsScreen(viewModel)
                         Screen.PROFILE -> ProfileScreen(viewModel)
                         Screen.AI_CHAT -> AiMechanicScreen(viewModel)
+                        Screen.OFFICE_MAIN,
+                        Screen.OFFICE_CREATE,
+                        Screen.OFFICE_DASHBOARD,
+                        Screen.OFFICE_ADD_VEHICLE,
+                        Screen.OFFICE_VEHICLE_DETAIL,
+                        Screen.OFFICE_NEW_ATTENDANCE -> OficinaScreen(viewModel)
+                        Screen.CURATOR_PANEL -> CuratorPanelScreen(viewModel)
                     }
                 }
             }

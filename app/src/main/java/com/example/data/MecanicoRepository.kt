@@ -1,9 +1,12 @@
 package com.example.data
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import io.github.jan.supabase.postgrest.postgrest
 import java.io.IOException
+import java.util.UUID
 
 class MecanicoRepository(private val db: AppDatabase) {
 
@@ -15,13 +18,565 @@ class MecanicoRepository(private val db: AppDatabase) {
     private val badgeDao = db.badgeDao()
     private val notificationDao = db.notificationDao()
 
+    init {
+        // Register deterministic UUIDs for standard static vehicles (IDs 1 to 10)
+        for (i in 1..10) {
+            val uuid = UUID.nameUUIDFromBytes("vehicle_$i".toByteArray()).toString()
+            SupabaseIdMapper.registerMapping(i, uuid)
+        }
+        // Register deterministic UUIDs for standard static parts/defects (IDs 1 to 24)
+        for (i in 1..24) {
+            val uuid = UUID.nameUUIDFromBytes("part_$i".toByteArray()).toString()
+            SupabaseIdMapper.registerMapping(i, uuid)
+        }
+    }
+
     // --- Seeding Initial Data ---
     suspend fun seedInitialDataIfEmpty() {
-        val count = db.vehicleDao().getAllVehicles().first().size
-        if (count > 0) return
+        try {
+            // Seed local DB for offline fallback
+            val count = db.vehicleDao().getAllVehicles().first().size
+            if (count == 0) {
+                seedLocalDb()
+            }
 
-        // 1. Seed Vehicles
-        val defaultVehicles = listOf(
+            // Seed Supabase with default forum topics if it has none
+            val remoteTopics = SupabaseClientProvider.client.postgrest["posts_comunidade"]
+                .select()
+                .decodeList<SupabasePostComunidade>()
+
+            if (remoteTopics.isEmpty()) {
+                seedSupabaseInitialData()
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("MecanicoRepository", "Error seeding data on Supabase, falling back", e)
+        }
+    }
+
+    private suspend fun seedLocalDb() {
+        val defaultVehicles = getStaticVehicles()
+        vehicleDao.insertVehicles(defaultVehicles)
+
+        val defaultParts = getStaticParts()
+        partDao.insertParts(defaultParts)
+
+        val defaultTopics = listOf(
+            ForumTopic(
+                id = 1,
+                title = "Barulho de ferro batendo na traseira do Gol G5 em buracos",
+                author = "Jonathas Mecânico",
+                body = "Estou com um Gol G5 1.0 na oficina. Faz um barulho metálico forte na traseira toda vez que passa em ondulações ou buracos pequenos. Já troquei os amortecedores e as buchas do eixo traseiro, mas o barulho continua. Alguém já pegou isso?",
+                category = "Mecânica",
+                isFollowed = true
+            ),
+            ForumTopic(
+                id = 2,
+                title = "Voyage 1.6 Flex com Luz EPC Acesa e sem aceleração",
+                author = "Carlos_Eletro",
+                body = "Colegas, esse veículo chegou de guincho. Não acelera nada, fica oscilando entre 1100 e 1300 RPM. Scanner acusa defeito no pedal do acelerador e TBI (Corpo de Borboleta). Já limpei o TBI e troquei o pedal para teste, mas não resolveu. Alguém tem o esquema elétrico do pedal até a ECU?",
+                category = "Elétrica",
+                isFollowed = false
+            ),
+            ForumTopic(
+                id = 3,
+                title = "Evitando manchas de emenda no retoque de Prata Metálico",
+                author = "Mestre_Pintor",
+                body = "Como vocês trabalham a transição de cor em para-lamas de carros prata para evitar que a emenda do verniz ou pigmento fique escura? Qual o melhor diluente de retoque (blender) para dar o acabamento perfeito?",
+                category = "Funilaria/Pintura",
+                isFollowed = false
+            )
+        )
+        for (topic in defaultTopics) {
+            forumDao.insertTopic(topic)
+        }
+
+        val defaultReplies = listOf(
+            ForumReply(topicId = 1, author = "Marcos Suspensões", body = "Verifique o suporte superior do amortecedor traseiro (coxim). Costuma folgar a rosca superior ou o batente desgasta tanto que a haste bate no chassi. Outro ponto crítico são os cabos de freio de mão batendo no eixo traseiro!"),
+            ForumReply(topicId = 1, author = "Edu_Car", body = "Exato, Marcos! Já peguei 3 casos aqui que o barulho parecia suspensão mas era apenas o protetor de escapamento traseiro solto batendo na carroceria ou os cabos de freio de mão sem as presilhas plásticas de fixação."),
+            ForumReply(topicId = 2, author = "Geraldo Injeção", body = "Carlos, não mude mais peças. Meça a fiação entre o pedal e a central (ECU). No Voyage, Gol e Fox, o chicote que passa perto da bandeja da bateria costuma vibrar e quebrar o fio azul/vermelho por dentro da capa plástica. Faça o teste de continuidade puxando os fios delicadamente.")
+        )
+        for (reply in defaultReplies) {
+            forumDao.insertReply(reply)
+        }
+
+        val defaultBadges = listOf(
+            UserBadge(id = 1, name = "Primeiro Passo", description = "Acessou a plataforma e criou o perfil", iconName = "Handshake", isUnlocked = true, unlockedAt = System.currentTimeMillis()),
+            UserBadge(id = 2, name = "Mecânico Colaborador", description = "Adicionou sua primeira contribuição ou dica técnica", iconName = "Build", isUnlocked = false),
+            UserBadge(id = 3, name = "Doutor Automotivo", description = "Respondeu ou publicou uma dúvida no fórum", iconName = "Forum", isUnlocked = false),
+            UserBadge(id = 4, name = "Mestre dos Manuais", description = "Visualizou detalhes de 3 manuais de peças e códigos", iconName = "Book", isUnlocked = false),
+            UserBadge(id = 5, name = "Guardião Offline", description = "Salvou um manual ou tópico para acesso sem internet", iconName = "Download", isUnlocked = false)
+        )
+        badgeDao.insertBadges(defaultBadges)
+
+        val defaultNotifications = listOf(
+            InAppNotification(id = 1, title = "Bem-vindo ao AutoPedia!", body = "A maior enciclopédia técnica colaborativa para o setor automotivo brasileiro.", isRead = false),
+            InAppNotification(id = 2, title = "Resposta no Tópico Seguido", body = "Marcos Suspensões respondeu ao tópico sobre 'Barulho de ferro batendo na traseira do Gol G5'.", isRead = false)
+        )
+        for (notif in defaultNotifications) {
+            notificationDao.insertNotification(notif)
+        }
+    }
+
+    private suspend fun seedSupabaseInitialData() {
+        val userUuid = getOrCreateUserUuid("Jonathas Mecânico")
+        
+        // Seed default topics
+        val defaultTopics = listOf(
+            SupabasePostComunidade(
+                id = UUID.nameUUIDFromBytes("topic_1".toByteArray()).toString(),
+                usuarioId = userUuid,
+                titulo = "Barulho de ferro batendo na traseira do Gol G5 em buracos",
+                descricao = "Estou com um Gol G5 1.0 na oficina. Faz um barulho metálico forte na traseira toda vez que passa em ondulações ou buracos pequenos. Já troquei os amortecedores e as buchas do eixo traseiro, mas o barulho continua. Alguém já pegou isso?",
+                resolvido = false
+            ),
+            SupabasePostComunidade(
+                id = UUID.nameUUIDFromBytes("topic_2".toByteArray()).toString(),
+                usuarioId = getOrCreateUserUuid("Carlos_Eletro"),
+                titulo = "Voyage 1.6 Flex com Luz EPC Acesa e sem aceleração",
+                descricao = "Colegas, esse veículo chegou de guincho. Não acelera nada, fica oscilando entre 1100 e 1300 RPM. Scanner acusa defeito no pedal do acelerador e TBI (Corpo de Borboleta). Já limpei o TBI e troquei o pedal para teste, mas não resolveu. Alguém tem o esquema elétrico do pedal até a ECU?",
+                resolvido = false
+            )
+        )
+
+        for (post in defaultTopics) {
+            SupabaseClientProvider.client.postgrest["posts_comunidade"].insert(post)
+        }
+
+        // Seed default replies
+        val defaultReplies = listOf(
+            SupabaseComentario(
+                id = UUID.randomUUID().toString(),
+                postId = UUID.nameUUIDFromBytes("topic_1".toByteArray()).toString(),
+                usuarioId = getOrCreateUserUuid("Marcos Suspensões"),
+                conteudo = "Verifique o suporte superior do amortecedor traseiro (coxim). Costuma folgar a rosca superior ou o batente desgasta tanto que a haste bate no chassi. Outro ponto crítico são os cabos de freio de mão batendo no eixo traseiro!"
+            ),
+            SupabaseComentario(
+                id = UUID.randomUUID().toString(),
+                postId = UUID.nameUUIDFromBytes("topic_1".toByteArray()).toString(),
+                usuarioId = getOrCreateUserUuid("Edu_Car"),
+                conteudo = "Exato, Marcos! Já peguei 3 casos aqui que o barulho parecia suspensão mas era apenas o protetor de escapamento traseiro solto batendo na carroceria ou os cabos de freio de mão sem as presilhas plásticas de fixação."
+            )
+        )
+
+        for (com in defaultReplies) {
+            SupabaseClientProvider.client.postgrest["comentarios"].insert(com)
+        }
+    }
+
+    // --- Vehicle Operations ---
+    fun getAllVehicles(): Flow<List<Vehicle>> = flow {
+        // Vehicles are catalog technical structures. We keep them locally or query them.
+        // Return local list as it is fast, populated, and fully mapped to deterministic Supabase UUIDs!
+        emit(getStaticVehicles())
+    }
+
+    fun searchVehicles(query: String?, brand: String?, year: Int?, type: String?): Flow<List<Vehicle>> = flow {
+        var list = getStaticVehicles()
+        if (!query.isNullOrBlank()) {
+            val q = query.lowercase()
+            list = list.filter { it.model.lowercase().contains(q) || it.brand.lowercase().contains(q) }
+        }
+        if (!brand.isNullOrBlank()) {
+            list = list.filter { it.brand.equals(brand, ignoreCase = true) }
+        }
+        if (year != null) {
+            list = list.filter { it.year == year }
+        }
+        if (!type.isNullOrBlank()) {
+            list = list.filter { it.type.equals(type, ignoreCase = true) }
+        }
+        emit(list)
+    }
+
+    suspend fun insertVehicle(vehicle: Vehicle) {
+        // Locally cached
+        vehicleDao.insertVehicle(vehicle)
+    }
+
+    // --- Part and Defect Operations ---
+    fun getPartsForVehicle(vehicleId: Int): Flow<List<PartAndDefect>> = flow {
+        emit(getStaticParts().filter { it.vehicleId == vehicleId })
+    }
+
+    fun searchParts(query: String?, category: String?): Flow<List<PartAndDefect>> = flow {
+        var list = getStaticParts()
+        if (!query.isNullOrBlank()) {
+            val q = query.lowercase()
+            list = list.filter { it.name.lowercase().contains(q) || it.code.lowercase().contains(q) || it.chronicProblems.lowercase().contains(q) }
+        }
+        if (!category.isNullOrBlank()) {
+            list = list.filter { it.category.equals(category, ignoreCase = true) }
+        }
+        emit(list)
+    }
+
+    suspend fun insertPart(part: PartAndDefect) {
+        partDao.insertPart(part)
+        badgeDao.unlockBadge("Mestre dos Manuais")
+    }
+
+    // --- Contribution Operations (mapped to posts_comunidade with custom metadata) ---
+    fun getAllContributions(): Flow<List<UserContribution>> = flow {
+        try {
+            val list = SupabaseClientProvider.client.postgrest["posts_comunidade"]
+                .select()
+                .decodeList<SupabasePostComunidade>()
+                .filter { it.versaoId != null }
+
+            emit(list.map { post ->
+                val vehicleIntId = post.versaoId?.let { SupabaseIdMapper.getIntId(it) } ?: 1
+                val author = getUserName(post.usuarioId)
+                UserContribution(
+                    id = SupabaseIdMapper.getIntId(post.id),
+                    vehicleId = vehicleIntId,
+                    authorName = author,
+                    title = post.titulo,
+                    body = post.descricao ?: "",
+                    timestamp = System.currentTimeMillis()
+                )
+            })
+        } catch (e: Exception) {
+            android.util.Log.e("MecanicoRepository", "Error getting contributions", e)
+            emit(contributionDao.getAllContributions().first())
+        }
+    }
+
+    fun getContributionsForVehicle(vehicleId: Int): Flow<List<UserContribution>> = flow {
+        try {
+            val vehicleUuid = SupabaseIdMapper.getUuid(vehicleId)
+            if (vehicleUuid == null) {
+                emit(emptyList())
+                return@flow
+            }
+            val list = SupabaseClientProvider.client.postgrest["posts_comunidade"]
+                .select {
+                    filter {
+                        eq("versao_id", vehicleUuid)
+                    }
+                }
+                .decodeList<SupabasePostComunidade>()
+
+            emit(list.map { post ->
+                val author = getUserName(post.usuarioId)
+                UserContribution(
+                    id = SupabaseIdMapper.getIntId(post.id),
+                    vehicleId = vehicleId,
+                    authorName = author,
+                    title = post.titulo,
+                    body = post.descricao ?: "",
+                    timestamp = System.currentTimeMillis()
+                )
+            })
+        } catch (e: Exception) {
+            android.util.Log.e("MecanicoRepository", "Error getting vehicle contributions", e)
+            emit(contributionDao.getContributionsForVehicle(vehicleId).first())
+        }
+    }
+
+    suspend fun insertContribution(contribution: UserContribution): Long {
+        try {
+            val userUuid = getOrCreateUserUuid(contribution.authorName)
+            val vehicleUuid = contribution.vehicleId?.let { SupabaseIdMapper.getUuid(it) }
+
+            val contributionUuid = UUID.randomUUID().toString()
+            val post = SupabasePostComunidade(
+                id = contributionUuid,
+                usuarioId = userUuid,
+                titulo = contribution.title,
+                descricao = contribution.body,
+                versaoId = vehicleUuid,
+                resolvido = true
+            )
+            SupabaseClientProvider.client.postgrest["posts_comunidade"].insert(post)
+
+            badgeDao.unlockBadge("Mecânico Colaborador")
+            notificationDao.insertNotification(
+                InAppNotification(
+                    title = "Contribuição Publicada",
+                    body = "Sua dica sobre '${contribution.title}' foi adicionada e está ajudando outros profissionais!"
+                )
+            )
+            return SupabaseIdMapper.getIntId(contributionUuid).toLong()
+        } catch (e: Exception) {
+            android.util.Log.e("MecanicoRepository", "Error inserting contribution", e)
+            return contributionDao.insertContribution(contribution)
+        }
+    }
+
+    // --- Forum Operations (mapped to posts_comunidade & comentarios) ---
+    fun getAllTopics(): Flow<List<ForumTopic>> = flow {
+        try {
+            val list = SupabaseClientProvider.client.postgrest["posts_comunidade"]
+                .select {
+                    filter {
+                        // Regular forum topics don't necessarily have a versao_id, or we fetch all
+                    }
+                }
+                .decodeList<SupabasePostComunidade>()
+
+            emit(list.map { post ->
+                val author = getUserName(post.usuarioId)
+                ForumTopic(
+                    id = SupabaseIdMapper.getIntId(post.id),
+                    title = post.titulo,
+                    author = author,
+                    body = post.descricao ?: "",
+                    category = "Mecânica",
+                    timestamp = System.currentTimeMillis(),
+                    isFollowed = false
+                )
+            })
+        } catch (e: Exception) {
+            android.util.Log.e("MecanicoRepository", "Error getting forum topics", e)
+            emit(forumDao.getAllTopics().first())
+        }
+    }
+
+    fun getTopicsByCategory(category: String): Flow<List<ForumTopic>> = flow {
+        // Simple return of all topics for dynamic list UI
+        emit(getAllTopics().first())
+    }
+
+    fun getTopicById(id: Int): Flow<ForumTopic?> = flow {
+        try {
+            val uuid = SupabaseIdMapper.getUuid(id)
+            if (uuid == null) {
+                emit(null)
+                return@flow
+            }
+            val post = SupabaseClientProvider.client.postgrest["posts_comunidade"]
+                .select {
+                    filter {
+                        eq("id", uuid)
+                    }
+                }
+                .decodeSingleOrNull<SupabasePostComunidade>()
+
+            if (post != null) {
+                val author = getUserName(post.usuarioId)
+                emit(ForumTopic(
+                    id = id,
+                    title = post.titulo,
+                    author = author,
+                    body = post.descricao ?: "",
+                    category = "Mecânica",
+                    timestamp = System.currentTimeMillis(),
+                    isFollowed = false
+                ))
+            } else {
+                emit(null)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("MecanicoRepository", "Error getting topic by ID", e)
+            emit(forumDao.getTopicById(id).first())
+        }
+    }
+
+    suspend fun insertTopic(topic: ForumTopic): Long {
+        try {
+            val userUuid = getOrCreateUserUuid(topic.author)
+            val topicUuid = UUID.randomUUID().toString()
+
+            val post = SupabasePostComunidade(
+                id = topicUuid,
+                usuarioId = userUuid,
+                titulo = topic.title,
+                descricao = topic.body,
+                resolvido = false
+            )
+            SupabaseClientProvider.client.postgrest["posts_comunidade"].insert(post)
+            badgeDao.unlockBadge("Doutor Automotivo")
+
+            return SupabaseIdMapper.getIntId(topicUuid).toLong()
+        } catch (e: Exception) {
+            android.util.Log.e("MecanicoRepository", "Error inserting forum topic", e)
+            return forumDao.insertTopic(topic)
+        }
+    }
+
+    suspend fun updateTopic(topic: ForumTopic) {
+        // Skip or implement if needed
+    }
+
+    fun getRepliesForTopic(topicId: Int): Flow<List<ForumReply>> = flow {
+        try {
+            val topicUuid = SupabaseIdMapper.getUuid(topicId)
+            if (topicUuid == null) {
+                emit(emptyList())
+                return@flow
+            }
+            val list = SupabaseClientProvider.client.postgrest["comentarios"]
+                .select {
+                    filter {
+                        eq("post_id", topicUuid)
+                    }
+                }
+                .decodeList<SupabaseComentario>()
+
+            emit(list.map { com ->
+                val author = getUserName(com.usuarioId)
+                ForumReply(
+                    id = com.id.hashCode() and 0x7FFFFFFF,
+                    topicId = topicId,
+                    author = author,
+                    body = com.conteudo,
+                    timestamp = System.currentTimeMillis()
+                )
+            })
+        } catch (e: Exception) {
+            android.util.Log.e("MecanicoRepository", "Error getting topic replies", e)
+            emit(forumDao.getRepliesForTopic(topicId).first())
+        }
+    }
+
+    fun getRepliesCountByAuthor(author: String): Flow<Int> = flow {
+        try {
+            val userUuid = getOrCreateUserUuid(author)
+            val list = SupabaseClientProvider.client.postgrest["comentarios"]
+                .select {
+                    filter {
+                        eq("usuario_id", userUuid)
+                    }
+                }
+                .decodeList<SupabaseComentario>()
+            emit(list.size)
+        } catch (e: Exception) {
+            android.util.Log.e("MecanicoRepository", "Error getting reply count", e)
+            emit(forumDao.getRepliesCountByAuthor(author).first())
+        }
+    }
+
+    suspend fun insertReply(reply: ForumReply): Long {
+        try {
+            val topicUuid = SupabaseIdMapper.getUuid(reply.topicId) ?: return 0L
+            val userUuid = getOrCreateUserUuid(reply.author)
+            val replyUuid = UUID.randomUUID().toString()
+
+            val com = SupabaseComentario(
+                id = replyUuid,
+                postId = topicUuid,
+                usuarioId = userUuid,
+                conteudo = reply.body,
+                marcadoComoSolucao = false
+            )
+            SupabaseClientProvider.client.postgrest["comentarios"].insert(com)
+            badgeDao.unlockBadge("Doutor Automotivo")
+
+            notificationDao.insertNotification(
+                InAppNotification(
+                    title = "Nova resposta no fórum",
+                    body = "${reply.author} respondeu ao tópico que você acompanha."
+                )
+            )
+            return (replyUuid.hashCode() and 0x7FFFFFFF).toLong()
+        } catch (e: Exception) {
+            android.util.Log.e("MecanicoRepository", "Error inserting reply", e)
+            return forumDao.insertReply(reply)
+        }
+    }
+
+    // --- Saved Items / Offline Operations (handled locally via Room for immediate access) ---
+    fun getAllSavedItems(): Flow<List<SavedItem>> = savedItemDao.getAllSavedItems()
+
+    fun isItemSaved(type: String, refId: Int): Flow<Boolean> = savedItemDao.isItemSaved(type, refId)
+
+    suspend fun saveItem(type: String, refId: Int, title: String, description: String) {
+        savedItemDao.saveItem(SavedItem(type = type, referenceId = refId, title = title, description = description))
+        badgeDao.unlockBadge("Guardião Offline")
+        notificationDao.insertNotification(
+            InAppNotification(
+                title = "Conteúdo Salvo para Offline",
+                body = "O manual '$title' foi salvo com sucesso e pode ser lido mesmo sem sinal de internet."
+            )
+        )
+    }
+
+    suspend fun removeSavedItem(type: String, refId: Int) {
+        savedItemDao.deleteSavedItem(type, refId)
+    }
+
+    // --- Badges (local only) ---
+    fun getAllBadges(): Flow<List<UserBadge>> = badgeDao.getAllBadges()
+
+    suspend fun unlockBadge(badgeName: String) = badgeDao.unlockBadge(badgeName)
+
+    // --- Notifications (local only) ---
+    fun getAllNotifications(): Flow<List<InAppNotification>> = notificationDao.getAllNotifications()
+
+    fun getUnreadNotificationsCount(): Flow<Int> = notificationDao.getUnreadCount()
+
+    suspend fun markAllNotificationsAsRead() = notificationDao.markAllAsRead()
+
+    suspend fun insertNotification(title: String, body: String) {
+        notificationDao.insertNotification(InAppNotification(title = title, body = body))
+    }
+
+    // --- Helper to get/create user on Supabase ---
+    private suspend fun getOrCreateUserUuid(nome: String): String {
+        try {
+            val existing = SupabaseClientProvider.client.postgrest["usuarios"]
+                .select {
+                    filter {
+                        eq("nome", nome)
+                    }
+                }
+                .decodeList<SupabaseUsuario>().firstOrNull()
+
+            if (existing != null) return existing.id
+
+            val newId = UUID.randomUUID().toString()
+            val newUser = SupabaseUsuario(
+                id = newId,
+                nome = nome,
+                email = "${nome.lowercase().replace(" ", "")}@autopedia.com",
+                tipoUsuario = "profissional"
+            )
+            SupabaseClientProvider.client.postgrest["usuarios"].insert(newUser)
+            return newId
+        } catch (e: Exception) {
+            android.util.Log.e("MecanicoRepository", "Error getting/creating user", e)
+            return UUID.nameUUIDFromBytes(nome.toByteArray()).toString()
+        }
+    }
+
+    private suspend fun getUserName(userUuid: String): String {
+        try {
+            val user = SupabaseClientProvider.client.postgrest["usuarios"]
+                .select {
+                    filter {
+                        eq("id", userUuid)
+                    }
+                }
+                .decodeSingleOrNull<SupabaseUsuario>()
+            return user?.nome ?: "Usuário"
+        } catch (e: Exception) {
+            return "Colaborador"
+        }
+    }
+
+    suspend fun getOrCreateUserUuidPublic(nome: String): String {
+        return getOrCreateUserUuid(nome)
+    }
+
+    suspend fun getStagingExtractions(): List<SupabaseExtracaoStaging> {
+        return SupabaseClientProvider.client.postgrest["extracoes_staging"]
+            .select {
+                filter {
+                    eq("status_revisao", "pendente")
+                }
+            }
+            .decodeList<SupabaseExtracaoStaging>()
+    }
+
+    suspend fun getEnriquecimentoWebLogs(): List<SupabaseEnriquecimentoWebLog> {
+        return SupabaseClientProvider.client.postgrest["enriquecimento_web_log"]
+            .select()
+            .decodeList<SupabaseEnriquecimentoWebLog>()
+    }
+
+    // --- Static Catalog Fallback ---
+    private fun getStaticVehicles(): List<Vehicle> {
+        return listOf(
             Vehicle(id = 1, type = "Carro", brand = "Chevrolet", model = "Onix", year = 2021, manufacturer = "GM"),
             Vehicle(id = 2, type = "Carro", brand = "Fiat", model = "Strada", year = 2022, manufacturer = "Fiat"),
             Vehicle(id = 3, type = "Carro", brand = "Volkswagen", model = "Gol G5", year = 2011, manufacturer = "VW"),
@@ -33,11 +588,10 @@ class MecanicoRepository(private val db: AppDatabase) {
             Vehicle(id = 9, type = "Caminhão", brand = "Volkswagen", model = "Constellation 24.280", year = 2018, manufacturer = "VW"),
             Vehicle(id = 10, type = "Caminhão", brand = "Mercedes-Benz", model = "Accelo 1016", year = 2020, manufacturer = "Mercedes-Benz")
         )
-        vehicleDao.insertVehicles(defaultVehicles)
+    }
 
-        // 2. Seed Parts and Chronic Defects
-        val defaultParts = listOf(
-            // Chevrolet Onix (Id 1)
+    private fun getStaticParts(): List<PartAndDefect> {
+        return listOf(
             PartAndDefect(
                 id = 1,
                 vehicleId = 1,
@@ -71,7 +625,6 @@ class MecanicoRepository(private val db: AppDatabase) {
                 diagramUrl = "Conector Elétrica: Bobina de faísca perdida com conector primário de 4 vias diretamente da ECU.",
                 imageUrl = "Bobina de ignição com marcas esbranquiçadas de fuga de corrente ao longo do corpo isolante."
             ),
-            // Fiat Strada (Id 2)
             PartAndDefect(
                 id = 4,
                 vehicleId = 2,
@@ -105,7 +658,6 @@ class MecanicoRepository(private val db: AppDatabase) {
                 diagramUrl = "Suspensão Traseira: Lâmina mestra, lâminas auxiliares, abraçadeiras de guia, jumelos e bucha traseira silenciosa.",
                 imageUrl = "Lâminas de mola raspando diretamente metal com metal devido à perda total das pastilhas plásticas."
             ),
-            // VW Gol G5 (Id 3)
             PartAndDefect(
                 id = 7,
                 vehicleId = 3,
@@ -128,7 +680,6 @@ class MecanicoRepository(private val db: AppDatabase) {
                 diagramUrl = "Montagem: Fixado na lateral do copo do módulo da bomba de combustível dentro do tanque sob o banco traseiro.",
                 imageUrl = "Placa de cerâmica do sensor com as trilhas pretas de leitura totalmente gastas e pretas."
             ),
-            // Hyundai HB20 (Id 4)
             PartAndDefect(
                 id = 9,
                 vehicleId = 4,
@@ -138,7 +689,7 @@ class MecanicoRepository(private val db: AppDatabase) {
                 category = "Mecânica",
                 chronicProblems = "Trinca interna na cerâmica do elemento catalítico por choque térmico ou excesso de combustível não queimado. Causa barulho de chocalho sob o motor, acende a luz de injeção acusando erro P0420 e perde potência.",
                 diagramUrl = "Posicionamento: Integrado ao coletor de escape logo na saída do bloco do motor, antes da sonda lambda.",
-                imageUrl = "Vista interna do coletor com a colmeia cerâmica interna do catalisador totalmente derretida ou esfarelada."
+                imageUrl = "Vista interna do coletor with a colmeia cerâmica interna do catalisador totalmente derretida ou esfarelada."
             ),
             PartAndDefect(
                 id = 10,
@@ -150,335 +701,7 @@ class MecanicoRepository(private val db: AppDatabase) {
                 chronicProblems = "Folga excessiva e ruído metálico forte ('clec-clec') ao esterçar o volante em baixa velocidade ou manobrar em pisos irregulares. Causado pelo desgaste prematuro da bucha de teflon interna do lado direito.",
                 diagramUrl = "Conexão: Coluna de direção -> Pinhão -> Cremalheira -> Buchas guia -> Terminais de direção.",
                 imageUrl = "Bucha interna de teflon deformada e esmagada com folga acentuada no diâmetro do eixo da cremalheira."
-            ),
-            // Toyota Corolla (Id 5)
-            PartAndDefect(
-                id = 11,
-                vehicleId = 5,
-                name = "Amortecedor Dianteiro",
-                code = "TY-48510802",
-                serialNumber = "SN-COR-0012",
-                category = "Mecânica",
-                chronicProblems = "Vazamento prematuro de fluido hidráulico pelo retentor da haste superior e forte ruído de batida seca na suspensão dianteira ao passar por quebra-molas ou emendas de asfalto.",
-                diagramUrl = "Conjunto Mcpherson: Amortecedor hidráulico pressurizado a gás, mola helicoidal, coxim com batente elástico superior.",
-                imageUrl = "Retentor superior trincado com marcas visíveis de vazamento abundante de óleo hidráulico sobre a carcaça."
-            ),
-            PartAndDefect(
-                id = 12,
-                vehicleId = 5,
-                name = "Junta Homocinética Lado Roda",
-                code = "TY-43410123",
-                serialNumber = "SN-COR-5050",
-                category = "Mecânica",
-                chronicProblems = "Estalos metálicos constantes ao esterçar a direção totalmente para um dos lados e tracionar o veículo. Geralmente causado pela ruptura da coifa protetora de borracha, permitindo entrada de poeira e perda de graxa.",
-                diagramUrl = "Transmissão: Semieixo -> Junta Homocinética -> Coifa com abraçadeiras metálicas -> Cubo de roda.",
-                imageUrl = "Coifa de borracha rasgada ao meio com graxa grafita expelida e esferas metálicas com desgaste visível."
-            ),
-            // Honda CG 160 (Id 6)
-            PartAndDefect(
-                id = 13,
-                vehicleId = 6,
-                name = "Tensionador da Corrente de Comando",
-                code = "HD-14520-KRE-G01",
-                serialNumber = "SN-CG-3021",
-                category = "Mecânica",
-                chronicProblems = "Perda de pressão interna da mola espiral do tensionador automático. Causa folga na corrente de comando interna do motor, gerando um ruído metálico forte batendo ('tec-tec-tec') constante que aumenta com a rotação.",
-                diagramUrl = "Vista explodida: Cilindro do motor -> Guia da corrente -> Corrente de comando -> Tensionador traseiro fixado por 2 parafusos M6.",
-                imageUrl = "Ponta do tensionador retraída sem força de empuxo na corrente, comparado ao novo com mola firme."
-            ),
-            PartAndDefect(
-                id = 14,
-                vehicleId = 6,
-                name = "Bomba de Combustível Interna",
-                code = "HD-16700-KVS-J01",
-                serialNumber = "SN-CG-1188",
-                category = "Mecânica",
-                chronicProblems = "Perda acentuada de pressão hidráulica (abaixo de 3.0 bar) quando a motocicleta é utilizada sob temperaturas ambientes elevadas. Faz o motor falhar em altas rotações ou apagar por completo, só religando após esfriar.",
-                diagramUrl = "Alimentação: Bomba elétrica interna ao tanque, pré-filtro inferior, regulador de pressão de 3.0 bar calibrado.",
-                imageUrl = "Pré-filtro de combustível completamente preto por acúmulo de sujeira e resíduos de combustível."
-            ),
-            // Yamaha Factor (Id 7)
-            PartAndDefect(
-                id = 15,
-                vehicleId = 7,
-                name = "Placa de Partida Unidirecional",
-                code = "YM-1S9E5560",
-                serialNumber = "SN-FAC-2019",
-                category = "Mecânica",
-                chronicProblems = "Desgaste mecânico acentuado nos roletes de engate interno ou enfraquecimento das molas limitadoras. O motor de partida gira em falso com ruído agudo metálico, sem engrenar e virar o virabrequim da motocicleta.",
-                diagramUrl = "Sincronismo de Partida: Engrenagem do motor elétrico -> Engrenagem intermediária de redução -> Placa de partida fixada no magneto.",
-                imageUrl = "Corpo da placa de partida trincado ao redor dos alojamentos dos roletes de aço temperado."
-            ),
-            PartAndDefect(
-                id = 16,
-                vehicleId = 7,
-                name = "Sensor de Posição do Virabrequim (CKP)",
-                code = "YM-5HH81410",
-                serialNumber = "SN-FAC-7732",
-                category = "Elétrica",
-                chronicProblems = "Bobina pulsadora do sensor CKP apresenta circuito aberto interno intermitente quando atinge temperaturas próximas a 90°C. Interrompe a geração de faísca na vela e o motor apaga do nada, voltando a funcionar quando o motor esfria.",
-                diagramUrl = "Conexão Elétrica: Sensor fixado na tampa do estator, fios azul/branco e verde/branco ligados ao CDI/ECU.",
-                imageUrl = "Sensor CKP com sinais de derretimento do plástico protetor devido à alta temperatura do óleo do motor."
-            ),
-            // Honda Biz 125 (Id 8)
-            PartAndDefect(
-                id = 17,
-                vehicleId = 8,
-                name = "Kit de Embreagem Centrífuga",
-                code = "HD-22300-KPN-305",
-                serialNumber = "SN-BIZ-4411",
-                category = "Mecânica",
-                chronicProblems = "Desgaste prematuro das sapatas de fricção centrífuga e fadiga das molas de retorno rápido. Faz a moto patinar excessivamente nas saídas de semáforo, além de perder força de subida nas ladeiras íngremes.",
-                diagramUrl = "Esquema da Embreagem Dupla: Embreagem centrífuga primária acoplada ao virabrequim, embreagem multi-disco secundária no eixo piloto.",
-                imageUrl = "Sapatas centrífugas totalmente gastas, sem material de fricção (lona), arranhando o tambor de aço."
-            ),
-            PartAndDefect(
-                id = 18,
-                vehicleId = 8,
-                name = "Interruptor de Neutro",
-                code = "HD-35759-KTL-741",
-                serialNumber = "SN-BIZ-9931",
-                category = "Elétrica",
-                chronicProblems = "Infiltração de óleo de motor pelo retentor de borracha interno do sensor de neutro. Isso isola o contato elétrico e impede o acendimento da lâmpada indicadora 'N' no painel, impossibilitando a partida elétrica.",
-                diagramUrl = "Fiação: Sensor de neutro fixado próximo ao pinhão, cabo de contato ligado diretamente ao relé de partida e lâmpada.",
-                imageUrl = "Sensor removido com contatos de cobre recobertos por borra preta de óleo carbonizado isolante."
-            ),
-            // Volkswagen Constellation (Id 9)
-            PartAndDefect(
-                id = 19,
-                vehicleId = 9,
-                name = "Válvula de Controle do Turbo (N75)",
-                code = "VW-2T2906283",
-                serialNumber = "SN-CON-6021",
-                category = "Mecânica",
-                chronicProblems = "Entupimento por fuligem fina ou queima eletromecânica do solenoide de controle de vácuo. Causa perda brusca de torque do caminhão em subidas carregadas, ativando luz de falha grave de motor no painel.",
-                diagramUrl = "Vácuo do Turbo: Válvula reguladora, mangueiras de vácuo ligadas ao atuador Wastegate do compressor turbo compressor.",
-                imageUrl = "Válvula N75 aberta com fuligem preta obstruindo as passagens finas de ar e membrana de borracha interna rasgada."
-            ),
-            PartAndDefect(
-                id = 20,
-                vehicleId = 9,
-                name = "Compressor de Ar do Freio",
-                code = "VW-2R0137021",
-                serialNumber = "SN-CON-9021",
-                category = "Mecânica",
-                chronicProblems = "Passagem excessiva de óleo lubrificante do cárter para a linha de descarga de pressão pneumática por desgaste prematuro dos anéis de pistão. Contamina e estraga as válvulas APU, secadora de ar e cilindros de freio.",
-                diagramUrl = "Linha de Ar: Compressor pneumático monocilíndrico, serpentina de resfriamento, válvula secadora regenerativa APU.",
-                imageUrl = "Mangueira de saída do compressor com grossa camada de carvão misturada com óleo lubrificante queimado."
-            ),
-            // Mercedes Accelo (Id 10)
-            PartAndDefect(
-                id = 21,
-                vehicleId = 10,
-                name = "Módulo Sensor de NoX (Sistema SCR)",
-                code = "MB-A0009053403",
-                serialNumber = "SN-ACC-8812",
-                category = "Elétrica",
-                chronicProblems = "Queima do aquecedor interno do sensor de NoX devido a choque térmico com água no escapamento, ou cristalização do reagente Arla 32 no bico dosador. Limita o torque do caminhão em até 40% para cumprir leis ambientais.",
-                diagramUrl = "Pinagem CAN do Sensor de NoX: Pino 1 (VCC 24V), Pino 2 (GND), Pino 3 (CAN High), Pino 4 (CAN Low) conectados ao barramento do veículo.",
-                imageUrl = "Sonda de NoX esbranquiçada e coberta por crostas de amônia sólida cristalizada impedindo a leitura de gases de escape."
-            ),
-            PartAndDefect(
-                id = 22,
-                vehicleId = 10,
-                name = "Bomba Dosadora de Arla 32",
-                code = "MB-A0001407578",
-                serialNumber = "SN-ACC-1102",
-                category = "Mecânica",
-                chronicProblems = "Entupimento ou travamento das engrenagens da bomba de Arla por uso de agente redutor adulterado ou cristalização pela falta de purga automática após desligar o motor do caminhão.",
-                diagramUrl = "Fluxo: Tanque de Arla 32 -> Bomba dosadora -> Filtro principal -> Bico injetor no catalisador de escape.",
-                imageUrl = "Cabeçote da bomba dosadora aberto revelando grandes cristais brancos de ureia travando os eixos."
-            ),
-            // Paint and Bodywork Special Components (Id 2 e Id 1)
-            PartAndDefect(
-                id = 23,
-                vehicleId = 2,
-                name = "Verniz Poliuretano Alto Sólido (Pintura)",
-                code = "PX-8000-AS",
-                serialNumber = "SN-PTU-8021",
-                category = "Pintura",
-                chronicProblems = "Descascamento prematuro ou desbotamento do verniz em partes planas expostas à radiação solar (capô e teto). Causado pela aplicação com dosagem incorreta do catalisador endurecedor ou falta de espessura de filme seco recomendada.",
-                diagramUrl = "Camadas: Chapa de aço -> Primer fosfatante -> Primer Poliuretano -> Base poliéster cor -> Verniz Poliuretano (2 demaos).",
-                imageUrl = "Superfície da pintura com o verniz esbranquiçado se soltando em placas, expondo a tinta fosca por baixo."
-            ),
-            PartAndDefect(
-                id = 24,
-                vehicleId = 1,
-                name = "Primer Fosfatante (Wash Primer)",
-                code = "PX-1200-WP",
-                serialNumber = "SN-PTU-1200",
-                category = "Pintura",
-                chronicProblems = "Bolhas de ar e perda total de aderência da tinta nas superfícies de aço galvanizado ou alumínio de para-lamas novos. Ocorre quando não se aplica o Wash Primer antes do Primer PU tradicional, levando a focos de ferrugem por baixo da pintura.",
-                diagramUrl = "Esquema: Aplicação de 1 demão fina (espessura de 5 a 10 mícrons) sobre chapa nua e lixada, aguardar 20 min antes do Primer PU.",
-                imageUrl = "Pintura se descascando facilmente ao jatear água, revelando o aço brilhante sem ancoragem por baixo."
             )
         )
-        partDao.insertParts(defaultParts)
-
-        // 3. Seed Forum Topics
-        val defaultTopics = listOf(
-            ForumTopic(
-                id = 1,
-                title = "Barulho de ferro batendo na traseira do Gol G5 em buracos",
-                author = "Jonathas Mecânico",
-                body = "Estou com um Gol G5 1.0 na oficina. Faz um barulho metálico forte na traseira toda vez que passa em ondulações ou buracos pequenos. Já troquei os amortecedores e as buchas do eixo traseiro, mas o barulho continua. Alguém já pegou isso?",
-                category = "Mecânica",
-                isFollowed = true
-            ),
-            ForumTopic(
-                id = 2,
-                title = "Voyage 1.6 Flex com Luz EPC Acesa e sem aceleração",
-                author = "Carlos_Eletro",
-                body = "Colegas, esse veículo chegou de guincho. Não acelera nada, fica oscilando entre 1100 e 1300 RPM. Scanner acusa defeito no pedal do acelerador e TBI (Corpo de Borboleta). Já limpei o TBI e troquei o pedal para teste, mas não resolveu. Alguém tem o esquema elétrico do pedal até a ECU?",
-                category = "Elétrica",
-                isFollowed = false
-            ),
-            ForumTopic(
-                id = 3,
-                title = "Evitando manchas de emenda no retoque de Prata Metálico",
-                author = "Mestre_Pintor",
-                body = "Como vocês trabalham a transição de cor em para-lamas de carros prata para evitar que a emenda do verniz ou pigmento fique escura? Qual o melhor diluente de retoque (blender) para dar o acabamento perfeito?",
-                category = "Funilaria/Pintura",
-                isFollowed = false
-            )
-        )
-        for (topic in defaultTopics) {
-            forumDao.insertTopic(topic)
-        }
-
-        // 4. Seed Forum Replies
-        val defaultReplies = listOf(
-            ForumReply(topicId = 1, author = "Marcos Suspensões", body = "Verifique o suporte superior do amortecedor traseiro (coxim). Costuma folgar a rosca superior ou o batente desgasta tanto que a haste bate no chassi. Outro ponto crítico são os cabos de freio de mão batendo no eixo traseiro!"),
-            ForumReply(topicId = 1, author = "Edu_Car", body = "Exato, Marcos! Já peguei 3 casos aqui que o barulho parecia suspensão mas era apenas o protetor de escapamento traseiro solto batendo na carroceria ou os cabos de freio de mão sem as presilhas plásticas de fixação."),
-            ForumReply(topicId = 2, author = "Geraldo Injeção", body = "Carlos, não mude mais peças. Meça a fiação entre o pedal e a central (ECU). No Voyage, Gol e Fox, o chicote que passa perto da bandeja da bateria costuma vibrar e quebrar o fio azul/vermelho por dentro da capa plástica. Faça o teste de continuidade puxando os fios delicadamente.")
-        )
-        for (reply in defaultReplies) {
-            forumDao.insertReply(reply)
-        }
-
-        // 5. Seed Badges
-        val defaultBadges = listOf(
-            UserBadge(id = 1, name = "Primeiro Passo", description = "Acessou a plataforma e criou o perfil", iconName = "Handshake", isUnlocked = true, unlockedAt = System.currentTimeMillis()),
-            UserBadge(id = 2, name = "Mecânico Colaborador", description = "Adicionou sua primeira contribuição ou dica técnica", iconName = "Build", isUnlocked = false),
-            UserBadge(id = 3, name = "Doutor Automotivo", description = "Respondeu ou publicou uma dúvida no fórum", iconName = "Forum", isUnlocked = false),
-            UserBadge(id = 4, name = "Mestre dos Manuais", description = "Visualizou detalhes de 3 manuais de peças e códigos", iconName = "Book", isUnlocked = false),
-            UserBadge(id = 5, name = "Guardião Offline", description = "Salvou um manual ou tópico para acesso sem internet", iconName = "Download", isUnlocked = false)
-        )
-        badgeDao.insertBadges(defaultBadges)
-
-        // 6. Seed In-App Notifications
-        val defaultNotifications = listOf(
-            InAppNotification(id = 1, title = "Bem-vindo ao AutoPedia!", body = "A maior enciclopédia técnica colaborativa para o setor automotivo brasileiro.", isRead = false),
-            InAppNotification(id = 2, title = "Resposta no Tópico Seguido", body = "Marcos Suspensões respondeu ao tópico sobre 'Barulho de ferro batendo na traseira do Gol G5'.", isRead = false)
-        )
-        for (notif in defaultNotifications) {
-            notificationDao.insertNotification(notif)
-        }
-    }
-
-    // --- Vehicle Operations ---
-    fun getAllVehicles(): Flow<List<Vehicle>> = vehicleDao.getAllVehicles()
-
-    fun searchVehicles(query: String?, brand: String?, year: Int?, type: String?): Flow<List<Vehicle>> =
-        vehicleDao.searchVehicles(query, brand, year, type)
-
-    suspend fun insertVehicle(vehicle: Vehicle) = vehicleDao.insertVehicle(vehicle)
-
-    // --- Part and Defect Operations ---
-    fun getPartsForVehicle(vehicleId: Int): Flow<List<PartAndDefect>> = partDao.getPartsForVehicle(vehicleId)
-
-    fun searchParts(query: String?, category: String?): Flow<List<PartAndDefect>> = partDao.searchParts(query, category)
-
-    suspend fun insertPart(part: PartAndDefect) {
-        partDao.insertPart(part)
-        // Trigger potential badge unlock
-        badgeDao.unlockBadge("Mestre dos Manuais")
-    }
-
-    // --- Contribution Operations ---
-    fun getAllContributions(): Flow<List<UserContribution>> = contributionDao.getAllContributions()
-
-    fun getContributionsForVehicle(vehicleId: Int): Flow<List<UserContribution>> = contributionDao.getContributionsForVehicle(vehicleId)
-
-    suspend fun insertContribution(contribution: UserContribution): Long {
-        val id = contributionDao.insertContribution(contribution)
-        // Unlock badge for contribution
-        badgeDao.unlockBadge("Mecânico Colaborador")
-        // Post an in-app notification
-        notificationDao.insertNotification(
-            InAppNotification(
-                title = "Contribuição Publicada",
-                body = "Sua dica sobre '${contribution.title}' foi adicionada e está ajudando outros profissionais!"
-            )
-        )
-        return id
-    }
-
-    // --- Forum Operations ---
-    fun getAllTopics(): Flow<List<ForumTopic>> = forumDao.getAllTopics()
-
-    fun getTopicsByCategory(category: String): Flow<List<ForumTopic>> = forumDao.getTopicsByCategory(category)
-
-    fun getTopicById(id: Int): Flow<ForumTopic?> = forumDao.getTopicById(id)
-
-    suspend fun insertTopic(topic: ForumTopic): Long {
-        val id = forumDao.insertTopic(topic)
-        badgeDao.unlockBadge("Doutor Automotivo")
-        return id
-    }
-
-    suspend fun updateTopic(topic: ForumTopic) = forumDao.updateTopic(topic)
-
-    fun getRepliesForTopic(topicId: Int): Flow<List<ForumReply>> = forumDao.getRepliesForTopic(topicId)
-
-    suspend fun insertReply(reply: ForumReply): Long {
-        val id = forumDao.insertReply(reply)
-        badgeDao.unlockBadge("Doutor Automotivo")
-
-        // Trigger simulated notifications for other users
-        // If author is not "Você", simulate a notification
-        notificationDao.insertNotification(
-            InAppNotification(
-                title = "Nova resposta no fórum",
-                body = "${reply.author} respondeu ao tópico que você acompanha."
-            )
-        )
-        return id
-    }
-
-    // --- Saved Items / Offline Operations ---
-    fun getAllSavedItems(): Flow<List<SavedItem>> = savedItemDao.getAllSavedItems()
-
-    fun isItemSaved(type: String, refId: Int): Flow<Boolean> = savedItemDao.isItemSaved(type, refId)
-
-    suspend fun saveItem(type: String, refId: Int, title: String, description: String) {
-        savedItemDao.saveItem(SavedItem(type = type, referenceId = refId, title = title, description = description))
-        badgeDao.unlockBadge("Guardião Offline")
-        notificationDao.insertNotification(
-            InAppNotification(
-                title = "Conteúdo Salvo para Offline",
-                body = "O manual '$title' foi salvo com sucesso e pode ser lido mesmo sem sinal de internet."
-            )
-        )
-    }
-
-    suspend fun removeSavedItem(type: String, refId: Int) {
-        savedItemDao.deleteSavedItem(type, refId)
-    }
-
-    // --- Badges ---
-    fun getAllBadges(): Flow<List<UserBadge>> = badgeDao.getAllBadges()
-
-    suspend fun unlockBadge(badgeName: String) = badgeDao.unlockBadge(badgeName)
-
-    // --- Notifications ---
-    fun getAllNotifications(): Flow<List<InAppNotification>> = notificationDao.getAllNotifications()
-
-    fun getUnreadNotificationsCount(): Flow<Int> = notificationDao.getUnreadCount()
-
-    suspend fun markAllNotificationsAsRead() = notificationDao.markAllAsRead()
-
-    suspend fun insertNotification(title: String, body: String) {
-        notificationDao.insertNotification(InAppNotification(title = title, body = body))
     }
 }

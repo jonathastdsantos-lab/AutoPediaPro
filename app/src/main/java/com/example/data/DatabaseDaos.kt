@@ -83,6 +83,9 @@ interface ForumDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertReply(reply: ForumReply): Long
+
+    @Query("SELECT COUNT(*) FROM forum_replies WHERE author = :author")
+    fun getRepliesCountByAuthor(author: String): Flow<Int>
 }
 
 @Dao

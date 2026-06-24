@@ -143,7 +143,7 @@ fun ForumScreen(viewModel: MecanicoViewModel) {
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     items(filteredTopics) { topic ->
-                        ForumTopicRow(topic = topic) {
+                        ForumTopicRow(topic = topic, viewModel = viewModel) {
                             viewModel.selectedTopic.value = topic
                         }
                     }
@@ -233,6 +233,7 @@ fun ForumScreen(viewModel: MecanicoViewModel) {
 @Composable
 fun ForumTopicRow(
     topic: ForumTopic,
+    viewModel: MecanicoViewModel,
     onClick: () -> Unit
 ) {
     Card(
@@ -292,12 +293,18 @@ fun ForumTopicRow(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "Por ${topic.author}",
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.SemiBold
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "Por ${topic.author}",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    CredibilityBadge(authorName = topic.author, viewModel = viewModel)
+                }
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -349,12 +356,18 @@ fun ForumTopicDetailView(
                             fontWeight = FontWeight.Black,
                             color = MaterialTheme.colorScheme.primary
                         )
-                        Text(
-                            text = "Por ${topic.author}",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "Por ${topic.author}",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            CredibilityBadge(authorName = topic.author, viewModel = viewModel)
+                        }
                     }
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(text = topic.title, fontSize = 18.sp, fontWeight = FontWeight.Bold)
@@ -385,7 +398,7 @@ fun ForumTopicDetailView(
             }
         } else {
             items(replies) { reply ->
-                ReplyRow(reply = reply)
+                ReplyRow(reply = reply, viewModel = viewModel)
             }
         }
 
@@ -441,7 +454,7 @@ fun ForumTopicDetailView(
 }
 
 @Composable
-fun ReplyRow(reply: ForumReply) {
+fun ReplyRow(reply: ForumReply, viewModel: MecanicoViewModel) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -469,6 +482,7 @@ fun ReplyRow(reply: ForumReply) {
                         Icon(Icons.Default.Engineering, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(12.dp))
                     }
                     Text(text = reply.author, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    CredibilityBadge(authorName = reply.author, viewModel = viewModel)
                 }
 
                 Box(
@@ -483,6 +497,43 @@ fun ReplyRow(reply: ForumReply) {
 
             Spacer(modifier = Modifier.height(8.dp))
             Text(text = reply.body, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f))
+        }
+    }
+}
+
+@Composable
+fun CredibilityBadge(authorName: String, viewModel: MecanicoViewModel) {
+    val points by viewModel.calcularPontosCredibilidade(authorName).collectAsState(initial = 0)
+    
+    val (tierLabel, tint, icon) = when {
+        points >= 300 -> Triple("Mestre", Color(0xFFFFD700), Icons.Default.WorkspacePremium)
+        points >= 150 -> Triple("Especialista", Color(0xFFC0C0C0), Icons.Default.Stars)
+        points >= 50 -> Triple("Colaborador", Color(0xFFCD7F32), Icons.Default.Shield)
+        else -> Triple("", Color.Transparent, null)
+    }
+
+    if (icon != null) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            modifier = Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .background(tint.copy(alpha = 0.15f))
+                .border(0.5.dp, tint.copy(alpha = 0.4f), RoundedCornerShape(4.dp))
+                .padding(horizontal = 4.dp, vertical = 2.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.size(10.dp)
+            )
+            Text(
+                text = tierLabel,
+                fontSize = 8.sp,
+                fontWeight = FontWeight.Bold,
+                color = tint
+            )
         }
     }
 }

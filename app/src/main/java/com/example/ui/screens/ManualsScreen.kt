@@ -29,11 +29,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import kotlinx.coroutines.launch
 import com.example.ui.MecanicoViewModel
 import com.example.ui.Screen
 import com.example.ui.theme.SuccessGreen
-import com.example.data.Vehicle
-import com.example.data.PartAndDefect
+import com.example.data.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -471,6 +473,7 @@ fun VehicleManualDetailsView(
                             PartAndDefectRow(
                                 part = part,
                                 isExpanded = expandedPartId == part.id,
+                                viewModel = viewModel,
                                 onToggleExpand = {
                                     expandedPartId = if (expandedPartId == part.id) null else part.id
                                 },
@@ -1105,6 +1108,7 @@ data class DiagramHotspot(
 fun PartAndDefectRow(
     part: PartAndDefect,
     isExpanded: Boolean,
+    viewModel: MecanicoViewModel,
     onToggleExpand: () -> Unit,
     onCopyCode: (String) -> Unit,
     onShareWhatsApp: () -> Unit
@@ -1238,6 +1242,336 @@ fun PartAndDefectRow(
                             }
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(part.imageUrl, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                        }
+                    }
+
+                    // --- Regional Pricing & Transparency Section ---
+                    HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
+                    
+                    Text(
+                        text = "TRANSPARÊNCIA DE PREÇOS COOPERATIVA",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Black,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+
+                    val formatCurrencyLocal = remember {
+                        { cents: Long? ->
+                            if (cents == null) "R$ 0,00"
+                            else java.text.NumberFormat.getCurrencyInstance(java.util.Locale("pt", "BR")).format(cents / 100.0)
+                        }
+                    }
+
+                    var selectedRegiaoShow by remember { mutableStateOf(RegiaoBrasil.SUDESTE) }
+                    val averagesFlow = remember(part) {
+                        viewModel.getPrecosMediosForPeca(part.vehicleId ?: 0, part.id)
+                    }
+                    val regionalAverages by averagesFlow.collectAsState(initial = emptyList())
+                    val activeAverage = regionalAverages.find { it.regiao == selectedRegiaoShow }
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
+                            .border(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f), RoundedCornerShape(12.dp))
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Estimativa de Custo no Brasil",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                            
+                            Icon(
+                                imageVector = Icons.Default.TrendingUp,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+
+                        // Region chip selector
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            RegiaoBrasil.values().forEach { r ->
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(if (selectedRegiaoShow == r) MaterialTheme.colorScheme.primary else Color.Transparent)
+                                        .border(1.dp, if (selectedRegiaoShow == r) Color.Transparent else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f), RoundedCornerShape(6.dp))
+                                        .clickable { selectedRegiaoShow = r }
+                                        .padding(horizontal = 6.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = r.name.replace("_", " "),
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (selectedRegiaoShow == r) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+                        }
+
+                        if (activeAverage == null) {
+                            Text(
+                                text = "Nenhuma estimativa de preço coletada para esta região ainda.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            )
+                        } else {
+                            val totalMedio = activeAverage.precoMedioPecasCentavos + activeAverage.precoMedioMaoObraCentavos
+                            
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Faixa regional:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                                    Text(
+                                        text = "${formatCurrencyLocal(activeAverage.precoMinimoCentavos)} a ${formatCurrencyLocal(activeAverage.precoMaximoCentavos)}",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Média Peças:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                                    Text(formatCurrencyLocal(activeAverage.precoMedioPecasCentavos), fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                }
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Média Mão de Obra:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                                    Text(formatCurrencyLocal(activeAverage.precoMedioMaoObraCentavos), fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                }
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Estimativa de Custo Total:", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        text = formatCurrencyLocal(totalMedio),
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Black,
+                                        color = Color(0xFF10B981)
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.height(4.dp))
+
+                                // Simple horizontal price range meter
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(8.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
+                                ) {
+                                    val ratio = if (activeAverage.precoMaximoCentavos > activeAverage.precoMinimoCentavos) {
+                                        val totalDiff = activeAverage.precoMaximoCentavos - activeAverage.precoMinimoCentavos
+                                        val currentDiff = totalMedio - activeAverage.precoMinimoCentavos
+                                        (currentDiff.toFloat() / totalDiff.toFloat()).coerceIn(0.1f, 0.9f)
+                                    } else {
+                                        0.5f
+                                    }
+
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxHeight()
+                                            .fillMaxWidth(ratio)
+                                            .background(
+                                                brush = androidx.compose.ui.graphics.Brush.horizontalGradient(
+                                                    colors = listOf(Color(0xFF34D399), Color(0xFFFBBF24), Color(0xFFF87171))
+                                                )
+                                            )
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Econômico", fontSize = 8.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f))
+                                    Text("Justo", fontSize = 8.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f))
+                                    Text("Oneroso", fontSize = 8.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f))
+                                }
+                            }
+                        }
+                    }
+
+                    // "Quanto você pagou?" Form Card
+                    var showForm by remember { mutableStateOf(false) }
+                    
+                    if (!showForm) {
+                        OutlinedButton(
+                            onClick = { showForm = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Icon(Icons.Default.AddCard, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Quanto você pagou por este reparo?", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    } else {
+                        var valorPecasInput by remember { mutableStateOf("") }
+                        var valorMaoObraInput by remember { mutableStateOf("") }
+                        var regiaoInput by remember { mutableStateOf(RegiaoBrasil.SUDESTE) }
+                        var showSuccessFeedback by remember { mutableStateOf<Boolean?>(null) } // true = verificado, false = moderation, null = none
+                        val coroutineScope = rememberCoroutineScope()
+
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("Contribuição de Preços", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+                                    IconButton(
+                                        onClick = { showForm = false },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(Icons.Default.Close, contentDescription = "Fechar", modifier = Modifier.size(16.dp))
+                                    }
+                                }
+
+                                if (showSuccessFeedback == null) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        OutlinedTextField(
+                                            value = valorPecasInput,
+                                            onValueChange = { valorPecasInput = it },
+                                            label = { Text("Peças (R$)") },
+                                            modifier = Modifier.weight(1f).testTag("input_contrib_pecas"),
+                                            singleLine = true,
+                                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal)
+                                        )
+
+                                        OutlinedTextField(
+                                            value = valorMaoObraInput,
+                                            onValueChange = { valorMaoObraInput = it },
+                                            label = { Text("Mão de Obra (R$)") },
+                                            modifier = Modifier.weight(1f).testTag("input_contrib_mao_obra"),
+                                            singleLine = true,
+                                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal)
+                                        )
+                                    }
+
+                                    // Region selection chip row
+                                    Text("Sua Região:", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        RegiaoBrasil.values().forEach { r ->
+                                            Box(
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(4.dp))
+                                                    .background(if (regiaoInput == r) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                                    .border(1.dp, if (regiaoInput == r) MaterialTheme.colorScheme.primary else Color.Transparent, RoundedCornerShape(4.dp))
+                                                    .clickable { regiaoInput = r }
+                                                    .padding(horizontal = 6.dp, vertical = 4.dp)
+                                            ) {
+                                                Text(r.name, fontSize = 8.sp, color = if (regiaoInput == r) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface)
+                                            }
+                                        }
+                                    }
+
+                                    val valP = (valorPecasInput.toDoubleOrNull()?.let { (it * 100).toLong() }) ?: 0L
+                                    val valM = (valorMaoObraInput.toDoubleOrNull()?.let { (it * 100).toLong() }) ?: 0L
+                                    val totalPaid = valP + valM
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("Total Estimado:", fontSize = 11.sp)
+                                        Text(formatCurrencyLocal(totalPaid), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    }
+
+                                    Button(
+                                        onClick = {
+                                            if (valP > 0 || valM > 0) {
+                                                coroutineScope.launch {
+                                                    val verified = viewModel.registrarPrecoReparo(
+                                                        veiculoId = part.vehicleId ?: 0,
+                                                        pecaId = part.id,
+                                                        valorPecasCentavos = valP,
+                                                        valorMaoObraCentavos = valM,
+                                                        regiao = regiaoInput
+                                                    )
+                                                    showSuccessFeedback = verified
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth().testTag("submit_price_contrib_btn"),
+                                        enabled = valP > 0 || valM > 0
+                                    ) {
+                                        Text("Enviar Anonimamente", fontSize = 12.sp)
+                                    }
+                                } else {
+                                    // Feedback states
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth().padding(8.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (showSuccessFeedback == true) Icons.Default.CheckCircle else Icons.Default.Pending,
+                                            contentDescription = null,
+                                            tint = if (showSuccessFeedback == true) Color(0xFF10B981) else Color(0xFFFBBF24),
+                                            modifier = Modifier.size(36.dp)
+                                        )
+                                        
+                                        Text(
+                                            text = if (showSuccessFeedback == true) "Contribuição integrada!" else "Contribuição em moderação",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 13.sp,
+                                            textAlign = TextAlign.Center
+                                        )
+
+                                        Text(
+                                            text = if (showSuccessFeedback == true) 
+                                                "Sua contribuição foi validada e integrada com sucesso ao banco regional de preços!" 
+                                                else "Valores discrepantes detectados em relação à média local. Sua contribuição foi encaminhada para revisão moderada.",
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                            textAlign = TextAlign.Center
+                                        )
+
+                                        TextButton(onClick = { 
+                                            showSuccessFeedback = null
+                                            valorPecasInput = ""
+                                            valorMaoObraInput = ""
+                                            showForm = false
+                                        }) {
+                                            Text("Fechar")
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
 
